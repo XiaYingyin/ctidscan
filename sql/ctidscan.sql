@@ -5,6 +5,7 @@
 -- construction of test data
 SET client_min_messages TO 'warning';
 
+-- create schema
 CREATE SCHEMA regtest_custom_scan;
 
 SET search_path TO regtest_custom_scan, public;
@@ -13,6 +14,7 @@ CREATE TABLE t1 (
     a   int primary key,
     b   text
 );
+-- insert random data
 INSERT INTO t1 (SELECT s, md5(s::text) FROM generate_series(1,400) s);
 VACUUM ANALYZE t1;
 

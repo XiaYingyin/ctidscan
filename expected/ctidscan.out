@@ -2,6 +2,7 @@
 -- Regression Tests for Custom Plan APIs
 --
 -- construction of test data
+
 SET client_min_messages TO 'warning';
 CREATE SCHEMA regtest_custom_scan;
 SET search_path TO regtest_custom_scan, public;
