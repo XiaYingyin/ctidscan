@@ -24,7 +24,7 @@ sudo systemctl restart postgresql.service
 
 为了不影响其他人正常使用PostgreSQL，建议使用第一种方法，局部加载扩展。
 
-另外，即使加载了扩展之后，仍然可以通过开关参数，开启或关闭（on/off）该模块：
+即使加载了扩展之后，仍然可以通过开关参数，开启或关闭（on/off）该模块：
 
 ```
 postgres=# set enable_ctidscan=off;
