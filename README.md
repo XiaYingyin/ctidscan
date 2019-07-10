@@ -1,6 +1,6 @@
 # ctidscan
 
-ctidscan是一个使用Custom Scan Provider API的demo。他提供了一个使用不等运算符访问系统列ctid的功能。其中ctid是PostgreSQL中的一个系统列，用来表示数据记录的物理行信息，指的是一条记录位于哪个数据块的哪个位移上面。 跟oracle中伪列rowid 的意义一样的；只是形式不一样。
+ctidscan是一个使用Custom Scan Provider API的demo。他提供了一个使用不等运算符访问系统列ctid的功能。其中ctid是PostgreSQL中的一个系统列，用来表示数据记录的物理行信息，指的是一条记录位于哪个数据块的哪个位移上面。 跟oracle中伪列rowid 的意义一样的，只是形式不一样。
 
 # 如何加载
 
