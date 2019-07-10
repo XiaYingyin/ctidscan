@@ -50,6 +50,71 @@
 #include "utils/ruleutils.h"
 #include "utils/spccache.h"
 
+#include "postgres.h"
+
+#include "executor/execdebug.h"
+//#include "executor/nodeSeqscan.h"
+#include "utils/rel.h"
+typedef struct FuncExprState
+{
+	ExprState	xprstate;
+	List	   *args;			/* states of argument expressions */
+
+	/*
+	 * Function manager's lookup info for the target function.  If func.fn_oid
+	 * is InvalidOid, we haven't initialized it yet (nor any of the following
+	 * fields).
+	 */
+	FmgrInfo	func;
+
+	/*
+	 * For a set-returning function (SRF) that returns a tuplestore, we keep
+	 * the tuplestore here and dole out the result rows one at a time. The
+	 * slot holds the row currently being returned.
+	 */
+	Tuplestorestate *funcResultStore;
+	TupleTableSlot *funcResultSlot;
+
+	/*
+	 * In some cases we need to compute a tuple descriptor for the function's
+	 * output.  If so, it's stored here.
+	 */
+	TupleDesc	funcResultDesc;
+	bool		funcReturnsTuple;		/* valid when funcResultDesc isn't
+										 * NULL */
+
+	/*
+	 * setArgsValid is true when we are evaluating a set-returning function
+	 * that uses value-per-call mode and we are in the middle of a call
+	 * series; we want to pass the same argument values to the function again
+	 * (and again, until it returns ExprEndResult).  This indicates that
+	 * fcinfo_data already contains valid argument data.
+	 */
+	bool		setArgsValid;
+
+	/*
+	 * Flag to remember whether we found a set-valued argument to the
+	 * function. This causes the function result to be a set as well. Valid
+	 * only when setArgsValid is true or funcResultStore isn't NULL.
+	 */
+	bool		setHasSetArg;	/* some argument returns a set */
+
+	/*
+	 * Flag to remember whether we have registered a shutdown callback for
+	 * this FuncExprState.  We do so only if funcResultStore or setArgsValid
+	 * has been set at least once (since all the callback is for is to release
+	 * the tuplestore or clear setArgsValid).
+	 */
+	bool		shutdown_reg;	/* a shutdown callback is registered */
+
+	/*
+	 * Call parameter structure for the function.  This has been initialized
+	 * (by InitFunctionCallInfoData) if func.fn_oid is valid.  It also saves
+	 * argument values between calls, when setArgsValid is true.
+	 */
+	FunctionCallInfoData fcinfo_data;
+} FuncExprState;
+
 /* missing declaration in pg_proc.h */
 #ifndef TIDGreaterOperator
 #define TIDGreaterOperator		2800
@@ -138,12 +203,12 @@ static CustomExecMethods	ctidscan_exec_methods = {
 	ReScanCtidScan,			/* ReScanCustomScan */
 	NULL,					/* MarkPosCustomScan */
 	NULL,					/* RestrPosCustomScan */
-#if PG_VERSION_NUM >= 90600
 	NULL,					/* EstimateDSMCustomScan */
 	NULL,					/* InitializeDSMCustomScan */
+	NULL,					/* ReInitializeDSMCustomScan */
 	NULL,					/* InitializeWorkerCustomScan */
-#endif
-	ExplainCtidScan,		/* ExplainCustomScan */
+	NULL,					/* ShutdownCustomScan */
+	ExplainCtidScan, 			/* ExplainCustomScan */
 };
 
 #define IsCTIDVar(node,rtindex)											\
@@ -512,6 +577,7 @@ CreateCtidScanState(CustomScan *custom_plan)
 {
 	CtidScanState  *ctss = palloc0(sizeof(CtidScanState));
 
+	//elog(INFO, "create ctidscan extension");
 	NodeSetTag(ctss, T_CustomScanState);
 	ctss->css.flags = custom_plan->flags;
 	ctss->css.methods = &ctidscan_exec_methods;
@@ -529,6 +595,7 @@ BeginCtidScan(CustomScanState *node, EState *estate, int eflags)
 	CtidScanState  *ctss = (CtidScanState *) node;
 	CustomScan	   *cscan = (CustomScan *) node->ss.ps.plan;
 
+	//elog(INFO, "begin ctidscan extension");
 	/*
 	 * In case of custom-scan provider that offers an alternative way
 	 * to scan a particular relation, most of the needed initialization,
@@ -536,8 +603,10 @@ BeginCtidScan(CustomScanState *node, EState *estate, int eflags)
 	 * info, shall be done by the core implementation. So, all we need
 	 * to have is initialization of own local properties.
 	 */
-	ctss->ctid_quals = (List *)
-		ExecInitExpr((Expr *)cscan->custom_exprs, &node->ss.ps);
+	//ctss->ctid_quals = (List *)
+	//	ExecInitExpr((Expr *)cscan->custom_exprs, &node->ss.ps);
+	ctss->ctid_quals = ExecInitExprList((List *)cscan->custom_exprs, &node->ss.ps);	
+	//elog(INFO, "finish begin ctidscan extension");
 }
 
 /*
@@ -560,6 +629,7 @@ ReScanCtidScan(CustomScanState *node)
 	ItemPointerData	ip_min;
 	ListCell	   *lc;
 
+	//elog(INFO, "rescan ctidscan extension");
 	/* once close the existing scandesc, if any */
 	if (scan)
 	{
@@ -571,9 +641,13 @@ ReScanCtidScan(CustomScanState *node)
 	foreach (lc, ctss->ctid_quals)
 	{
 		FuncExprState  *fexstate = (FuncExprState *) lfirst(lc);
+		//FuncExpr *fexstate = lfirst(lc);
 		OpExpr		   *op = (OpExpr *)fexstate->xprstate.expr;
+		//OpExpr		   *op = (OpExpr *)&(fexstate->xpr);
 		Node		   *arg1 = linitial(op->args);
+		//elog(INFO, "rescan ctidscan extension to 643");
 		Node		   *arg2 = lsecond(op->args);
+		//elog(INFO, "rescan ctidscan extension to 645");
 		Index			scanrelid;
 		Oid				opno;
 		ExprState	   *exstate;
@@ -581,24 +655,29 @@ ReScanCtidScan(CustomScanState *node)
 		bool			isnull;
 
 		scanrelid = ((Scan *)ctss->css.ss.ps.plan)->scanrelid;
+		//elog(INFO, "rescan ctidscan extension to 653");
 		if (IsCTIDVar(arg1, scanrelid))
 		{
+			//elog(INFO, "Ctid: arg1");
 			exstate = (ExprState *) lsecond(fexstate->args);
+			//elog(INFO, "rescan ctidscan extension to 658");
 			opno = op->opno;
+			//elog(INFO, "rescan ctidscan extension to 660");
 		}
 		else if (IsCTIDVar(arg2, scanrelid))
 		{
+			//elog(INFO, "Ctid: arg2");
 			exstate = (ExprState *) linitial(fexstate->args);
 			opno = get_commutator(op->opno);
+			//elog(INFO, "rescan ctidscan extension to 663");
 		}
 		else
 			elog(ERROR, "could not identify CTID variable");
 
 		itemptr = (ItemPointer)
 			DatumGetPointer(ExecEvalExprSwitchContext(exstate,
-													  econtext,
-													  &isnull,
-													  NULL));
+								  econtext,
+								  &isnull));
 		if (isnull)
 		{
 			/*
@@ -618,8 +697,8 @@ ReScanCtidScan(CustomScanState *node)
 					ItemPointerCompare(itemptr, &ip_max) <= 0)
 				{
 					ScanKeyInit(&keys[0],
-								SelfItemPointerAttributeNumber,
-								BTLessStrategyNumber,
+						    SelfItemPointerAttributeNumber,
+						    BTLessStrategyNumber,
 								F_TIDLT,
 								PointerGetDatum(itemptr));
 					ItemPointerCopy(itemptr, &ip_max);
@@ -675,6 +754,7 @@ ReScanCtidScan(CustomScanState *node)
 		}
 	}
 
+	//elog(INFO, "rescan ctidscan extension to 743");
 	/* begin heapscan with the key above */
 	if (has_ubound && has_lbound)
 		scan = heap_beginscan(relation, estate->es_snapshot, 2, &keys[0]);
@@ -710,27 +790,53 @@ ReScanCtidScan(CustomScanState *node)
 static TupleTableSlot *
 CTidAccessCustomScan(CustomScanState *node)
 {
-	CtidScanState  *ctss = (CtidScanState *) node;
-	HeapScanDesc	scan;
+	HeapTuple	tuple;
+	HeapScanDesc scandesc;
+	EState	   *estate;
+	ScanDirection direction;
 	TupleTableSlot *slot;
-	EState		   *estate = node->ss.ps.state;
-	ScanDirection	direction = estate->es_direction;
-	HeapTuple		tuple;
 
-	if (!ctss->css.ss.ss_currentScanDesc)
-		ReScanCtidScan(node);
-	scan = ctss->css.ss.ss_currentScanDesc;
-	Assert(scan != NULL);
+	/*
+	 * get information from the estate and scan state
+	 */
+	scandesc = node->ss.ss_currentScanDesc;
+	estate = node->ss.ps.state;
+	direction = estate->es_direction;
+	slot = node->ss.ss_ScanTupleSlot;
+
+	if (scandesc == NULL)
+	{
+		/*
+		 * We reach here if the scan is not parallel, or if we're serially
+		 * executing a scan that was planned to be parallel.
+		 */
+		scandesc = heap_beginscan(node->ss.ss_currentRelation,
+								  estate->es_snapshot,
+								  0, NULL);
+		node->ss.ss_currentScanDesc = scandesc;
+	}
 
 	/*
 	 * get the next tuple from the table
 	 */
-	tuple = heap_getnext(scan, direction);
-	if (!HeapTupleIsValid(tuple))
-		return NULL;
+	tuple = heap_getnext(scandesc, direction);
 
-	slot = ctss->css.ss.ss_ScanTupleSlot;
-	ExecStoreTuple(tuple, slot, scan->rs_cbuf, false);
+	/*
+	 * save the tuple and the buffer returned to us by the access methods in
+	 * our scan tuple slot and return the slot.  Note: we pass 'false' because
+	 * tuples returned by heap_getnext() are pointers onto disk pages and were
+	 * not created with palloc() and so should not be pfree()'d.  Note also
+	 * that ExecStoreTuple will increment the refcount of the buffer; the
+	 * refcount will not be dropped until the tuple table slot is cleared.
+	 */
+	if (tuple)
+		ExecStoreTuple(tuple,	/* tuple to store */
+					   slot,	/* slot to store in */
+					   scandesc->rs_cbuf,	/* buffer associated with this
+											 * tuple */
+					   false);	/* don't pfree this pointer */
+	else
+		ExecClearTuple(slot);
 
 	return slot;
 }
@@ -738,6 +844,10 @@ CTidAccessCustomScan(CustomScanState *node)
 static bool
 CTidRecheckCustomScan(CustomScanState *node, TupleTableSlot *slot)
 {
+	/*
+	 * Note that unlike IndexScan, SeqScan never use keys in heap_beginscan
+	 * (and this is very bad) - so, here we do not check are keys ok or not.
+	 */
 	return true;
 }
 
@@ -748,9 +858,9 @@ CTidRecheckCustomScan(CustomScanState *node, TupleTableSlot *slot)
 static TupleTableSlot *
 ExecCtidScan(CustomScanState *node)
 {
-	return ExecScan(&node->ss,
-					(ExecScanAccessMtd) CTidAccessCustomScan,
-					(ExecScanRecheckMtd) CTidRecheckCustomScan);
+//	CustomScanState *node = castNode(CustomScanState, pstate);
+	//elog(INFO, "exec ctidscan extension");
+	return ExecScan(&node->ss, (ExecScanAccessMtd) CTidAccessCustomScan, (ExecScanRecheckMtd) CTidRecheckCustomScan);
 }
 
 /*
@@ -805,16 +915,16 @@ ExplainCtidScan(CustomScanState *node, List *ancestors, ExplainState *es)
  */
 void
 _PG_init(void)
-{
+{	
 	DefineCustomBoolVariable("enable_ctidscan",
-							 "Enables the planner's use of ctid-scan plans.",
-							 NULL,
-							 &enable_ctidscan,
-							 true,
-							 PGC_USERSET,
-							 GUC_NOT_IN_SAMPLE,
-							 NULL, NULL, NULL);
-
+				 "Enables the planner's use of ctid-scan plans.",
+				 NULL,
+				 &enable_ctidscan,
+				 true,
+				 PGC_USERSET,
+				 GUC_NOT_IN_SAMPLE,
+				 NULL, NULL, NULL);
+	//elog(INFO, "init ctidscan extension");
 	/* registration of the hook to add alternative path */
 	set_rel_pathlist_next = set_rel_pathlist_hook;
 	set_rel_pathlist_hook = SetCtidScanPath;
