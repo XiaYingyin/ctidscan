@@ -25,6 +25,7 @@
 #include "commands/explain.h"
 #include "executor/executor.h"
 #include "executor/nodeCustom.h"
+#include "executor/execdebug.h"
 #include "fmgr.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -50,11 +51,6 @@
 #include "utils/ruleutils.h"
 #include "utils/spccache.h"
 
-#include "postgres.h"
-
-#include "executor/execdebug.h"
-//#include "executor/nodeSeqscan.h"
-#include "utils/rel.h"
 typedef struct FuncExprState
 {
 	ExprState	xprstate;
@@ -595,7 +591,7 @@ BeginCtidScan(CustomScanState *node, EState *estate, int eflags)
 	CtidScanState  *ctss = (CtidScanState *) node;
 	CustomScan	   *cscan = (CustomScan *) node->ss.ps.plan;
 
-	//elog(INFO, "begin ctidscan extension");
+	elog(INFO, "begin ctidscan extension");
 	/*
 	 * In case of custom-scan provider that offers an alternative way
 	 * to scan a particular relation, most of the needed initialization,
@@ -874,6 +870,7 @@ EndCtidScan(CustomScanState *node)
 
 	if (ctss->css.ss.ss_currentScanDesc)
 		heap_endscan(ctss->css.ss.ss_currentScanDesc);
+	elog(INFO, "end ctidscan extension");
 }
 
 /*

@@ -1,0 +1,6 @@
+# temp files
+*.swp
+
+# binary files
+*.so
+*.o
